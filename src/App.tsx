@@ -1,19 +1,39 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { CircularProgressbarWithChildren, buildStyles } from "react-circular-progressbar";
 import "react-circular-progressbar/dist/styles.css";
 
-// 会議室マスタ（プレーンJS）
-const ROOMS = {
+// 会議室マスタ
+const ROOMS: Record<number, string> = {
 	331: "カンムリワシ",
 	332: "ハイビスカス",
 	333: "がじゅまる",
 };
 
+// 予約情報（親子でやり取りする形）
+type ReservationSummary = {
+	employee_name: string;
+	meeting_name: string;
+	start_datetime: string; // "YYYY-MM-DD HH:mm" JST
+	end_datetime: string; // "YYYY-MM-DD HH:mm" JST
+	isOngoing: boolean;
+};
+
+// APIレスポンスの予約1件分
+type ReservationApi = {
+	employee_name: string;
+	meeting_name: string;
+	start_datetime: string;
+	end_datetime: string;
+};
+
+/* -------------------- ルートレイアウト -------------------- */
+
 export default function CountdownLayout() {
 	const [showModal, setShowModal] = useState(false);
-	const [seatId, setSeatId] = useState(333);
-	const [countdownTarget, setCountdownTarget] = useState(null); // "YYYY-MM-DD HH:mm"
-	const [countdownLabel, setCountdownLabel] = useState("開始まで");
+	const [seatId, setSeatId] = useState<number>(333);
+	const [countdownTarget, setCountdownTarget] = useState<string | null>(null); // "YYYY-MM-DD HH:mm"
+	const [countdownLabel, setCountdownLabel] = useState<string>("開始まで");
 
 	return (
 		<div className='min-h-screen bg-slate-50 text-slate-900'>
@@ -30,7 +50,9 @@ export default function CountdownLayout() {
 							id='room'
 							className='rounded-xl border px-3 py-1.5 text-base shadow-sm hover:bg-slate-50'
 							value={seatId}
-							onChange={(e) => setSeatId(Number(e.target.value))}>
+							onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+								setSeatId(Number(e.target.value))
+							}>
 							<option value={333}>がじゅまる (333)</option>
 							<option value={332}>ハイビスカス (332)</option>
 							<option value={331}>カンムリワシ (331)</option>
@@ -99,7 +121,9 @@ export default function CountdownLayout() {
 	);
 }
 
-function formatHMS(totalMs) {
+/* -------------------- 共通ユーティリティ -------------------- */
+
+function formatHMS(totalMs: number): string {
 	const total = Math.max(0, Math.floor(totalMs / 1000));
 	const h = Math.floor(total / 3600);
 	const m = Math.floor((total % 3600) / 60);
@@ -107,6 +131,18 @@ function formatHMS(totalMs) {
 	if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 	return `${m}:${String(s).padStart(2, "0")}`;
 }
+
+/* -------------------- カウントダウンコンポーネント -------------------- */
+
+type CountdownCircleProps = {
+	/** "YYYY-MM-DD HH:mm" JST */
+	targetJst?: string;
+	durationSeconds?: number;
+	sizePx?: number;
+	strokeWidth?: number;
+	onComplete?: () => void;
+	labelText?: string;
+};
 
 /**
  * 右: targetJst ("YYYY-MM-DD HH:mm" JST) に向けたカウントダウン。
@@ -119,8 +155,8 @@ function CountdownCircle({
 	strokeWidth = 12,
 	onComplete,
 	labelText,
-}) {
-	const formatShort = (ms) => {
+}: CountdownCircleProps) {
+	const formatShort = (ms: number): string => {
 		const sec = Math.ceil(ms / 1000);
 		if (sec < 60) return `${sec} 秒`;
 		const min = Math.ceil(sec / 60);
@@ -131,16 +167,16 @@ function CountdownCircle({
 		return `${days} 日`;
 	};
 
-	const parseJst = (s) => new Date(s.replace(" ", "T") + "+09:00");
-	const computeEnd = () =>
+	const parseJst = (s: string): Date => new Date(s.replace(" ", "T") + "+09:00");
+	const computeEnd = (): number =>
 		targetJst
 			? parseJst(targetJst).getTime()
 			: Date.now() + Math.max(0, durationSeconds * 1000);
 
-	const [endAt, setEndAt] = useState(computeEnd());
-	const [initialTotal, setInitialTotal] = useState(Math.max(0, endAt - Date.now()));
-	const [remainingMs, setRemainingMs] = useState(initialTotal);
-	const [fired, setFired] = useState(false);
+	const [endAt, setEndAt] = useState<number>(computeEnd());
+	const [initialTotal, setInitialTotal] = useState<number>(Math.max(0, endAt - Date.now()));
+	const [remainingMs, setRemainingMs] = useState<number>(initialTotal);
+	const [fired, setFired] = useState<boolean>(false);
 
 	// targetJst / duration が変わったらリセット
 	useEffect(() => {
@@ -204,9 +240,16 @@ function CountdownCircle({
 	);
 }
 
-function Modal({ children, onClose }) {
+/* -------------------- モーダル -------------------- */
+
+type ModalProps = {
+	children: ReactNode;
+	onClose: () => void;
+};
+
+function Modal({ children, onClose }: ModalProps) {
 	useEffect(() => {
-		const onKey = (e) => {
+		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") onClose();
 		};
 		window.addEventListener("keydown", onKey);
@@ -233,28 +276,39 @@ function Modal({ children, onClose }) {
 	);
 }
 
-/**
- * 左カラム：社内APIから今週の予約をfetchし、
- * - これからの予定 or 進行中（end > now）の最も近い1件を表示
- * - 親へ onNextChange で開始/終了どちらに向けるかの情報を渡す
- */
-function NextReservation({ seatId, onNextChange }) {
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState(null);
-	const [reservation, setReservation] = useState(null);
+/* -------------------- 左カラム：次の予約 -------------------- */
+
+type NextReservationProps = {
+	seatId: number;
+	onNextChange?: (reservation: ReservationSummary | null) => void;
+};
+
+// Intl.DateTimeFormat#formatToParts 用の型
+type DateParts = {
+	month?: string;
+	day?: string;
+	weekday?: string;
+};
+
+function NextReservation({ seatId, onNextChange }: NextReservationProps) {
+	const [loading, setLoading] = useState<boolean>(true);
+	const [error, setError] = useState<string | null>(null);
+	const [reservation, setReservation] = useState<ReservationSummary | null>(null);
 
 	// JSTの今週（日曜始まり）を計算して、ISO8601(+09:00)で文字列化
-	const buildWeekRangeJst = () => {
+	const buildWeekRangeJst = (): { start: string; end: string } => {
 		const now = new Date();
-		const weekdayIdx = new Date(`${now.toISOString().split("T")[0]}T00:00:00+09:00`).getDay();
+		const todayStr = `${now.toISOString().split("T")[0]}T00:00:00+09:00`;
+		const today = new Date(todayStr);
+		const weekdayIdx = today.getDay();
 
-		const startDate = new Date(`${now.toISOString().split("T")[0]}T00:00:00+09:00`);
+		const startDate = new Date(todayStr);
 		startDate.setDate(startDate.getDate() - weekdayIdx);
 
 		const endDate = new Date(startDate);
 		endDate.setDate(endDate.getDate() + 7); // 翌週開始（[start, end)）
 
-		const toIsoJst = (dt) => {
+		const toIsoJst = (dt: Date): string => {
 			const yy = dt.getFullYear();
 			const mm = String(dt.getMonth() + 1).padStart(2, "0");
 			const dd = String(dt.getDate()).padStart(2, "0");
@@ -274,16 +328,22 @@ function NextReservation({ seatId, onNextChange }) {
 		(async () => {
 			try {
 				setLoading(true);
+				setError(null);
+
 				const res = await fetch(url, { signal: abort.signal });
 				if (!res.ok) throw new Error(`HTTP ${res.status}`);
-				const data = await res.json();
-				const list = Array.isArray(data?.reservations) ? data.reservations : [];
+
+				const data: unknown = await res.json();
+				const list: ReservationApi[] = Array.isArray((data as any)?.reservations)
+					? (data as any).reservations
+					: [];
 
 				const nowJst = new Date();
-				const toDateJst = (s) => new Date(s.replace(" ", "T") + "+09:00");
+				const toDateJst = (s: string): Date => new Date(s.replace(" ", "T") + "+09:00");
+
 				// 終了が未来（= 現在以降にかかっている or これから始まる）を対象
 				const candidate = list
-					.map((r) => ({
+					.map((r: ReservationApi) => ({
 						employee_name: r.employee_name,
 						meeting_name: r.meeting_name,
 						start_datetime: r.start_datetime,
@@ -296,7 +356,7 @@ function NextReservation({ seatId, onNextChange }) {
 
 				if (candidate) {
 					const isOngoing = candidate.start.getTime() <= nowJst.getTime();
-					const picked = {
+					const picked: ReservationSummary = {
 						employee_name: candidate.employee_name,
 						meeting_name: candidate.meeting_name,
 						start_datetime: candidate.start_datetime,
@@ -309,8 +369,12 @@ function NextReservation({ seatId, onNextChange }) {
 					setReservation(null);
 					onNextChange?.(null);
 				}
-			} catch (e) {
-				if (e.name !== "AbortError") setError(e.message ?? String(e));
+			} catch (e: unknown) {
+				if (e instanceof DOMException && e.name === "AbortError") {
+					// ignore
+				} else {
+					setError(e instanceof Error ? e.message : String(e));
+				}
 			} finally {
 				setLoading(false);
 			}
@@ -319,7 +383,7 @@ function NextReservation({ seatId, onNextChange }) {
 		return () => abort.abort();
 	}, [seatId, onNextChange]);
 
-	const formatDateJp = (start) => {
+	const formatDateJp = (start: string): string => {
 		const d = new Date(start.replace(" ", "T") + "+09:00");
 		const fmt = new Intl.DateTimeFormat("ja-JP", {
 			timeZone: "Asia/Tokyo",
@@ -327,15 +391,22 @@ function NextReservation({ seatId, onNextChange }) {
 			day: "2-digit",
 			weekday: "short",
 		});
-		const parts = fmt.formatToParts(d).reduce((acc, p) => {
-			acc[p.type] = p.value;
+
+		const parts = fmt.formatToParts(d).reduce<DateParts>((acc, p) => {
+			if (p.type === "month" || p.type === "day" || p.type === "weekday") {
+				acc[p.type] = p.value;
+			}
 			return acc;
 		}, {});
-		return `${parts.month}/${parts.day}(${parts.weekday})`;
+
+		const month = parts.month ?? "";
+		const day = parts.day ?? "";
+		const weekday = parts.weekday ?? "";
+		return `${month}/${day}(${weekday})`;
 	};
 
-	const formatRange = (start, end) => {
-		const toHm = (s) => s.split(" ")[1]?.slice(0, 5) ?? s;
+	const formatRange = (start: string, end: string): string => {
+		const toHm = (s: string): string => s.split(" ")[1]?.slice(0, 5) ?? s;
 		return `${toHm(start)}-${toHm(end)}`;
 	};
 
@@ -347,7 +418,7 @@ function NextReservation({ seatId, onNextChange }) {
 		<div>
 			<h2 className='mb-4 text-3xl font-extrabold'>
 				{reservation.isOngoing ? "会議中" : "次の会議がはじまります"}（
-				{ROOMS[seatId] ?? seatId}）
+				{ROOMS[seatId] ?? String(seatId)}）
 			</h2>
 			<div className='space-y-2'>
 				<div className='text-2xl font-semibold text-slate-700'>
