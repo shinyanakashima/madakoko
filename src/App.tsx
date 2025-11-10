@@ -9,6 +9,7 @@ const ROOMS: Record<number, string> = {
 	332: "ハイビスカス",
 	333: "がじゅまる",
 };
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // 予約情報（親子でやり取りする形）
 type ReservationSummary = {
@@ -321,7 +322,7 @@ function NextReservation({ seatId, onNextChange }: NextReservationProps) {
 	useEffect(() => {
 		const abort = new AbortController();
 		const { start, end } = buildWeekRangeJst();
-		const url = `/reservations/api/future-reservations?seat_id=${seatId}&start_date=${encodeURIComponent(
+		const url = `${API_BASE}/reservations/api/future-reservations?seat_id=${seatId}&start_date=${encodeURIComponent(
 			start
 		)}&end_date=${encodeURIComponent(end)}`;
 
